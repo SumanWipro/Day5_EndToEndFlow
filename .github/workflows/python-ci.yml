@@ -1,4 +1,4 @@
-name: Python CI
+name: Python CI/CD
 
 on:
   push:
@@ -7,7 +7,9 @@ on:
     branches: ["main"]
 
 jobs:
+  # ── Stage 1: Test ────────────────────────────────────────────────────────────
   test:
+    name: Test
     runs-on: ubuntu-latest
 
     steps:
@@ -23,5 +25,50 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run tests
-        run: pytest tests/ -v
+      - name: Run tests with coverage
+        run: pytest tests/ -v --cov=calculator --cov-report=term-missing --cov-fail-under=60
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: .coverage
+
+  # ── Stage 2: Deploy ──────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build release archive
+        run: |
+          zip -r calculator-v${{ github.run_number }}.zip \
+            calculator/ tests/ main.py requirements.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          name: "Release v${{ github.run_number }}"
+          body: |
+            Automated release from commit ${{ github.sha }}
+
+            **Changes:** ${{ github.event.head_commit.message }}
+          files: calculator-v${{ github.run_number }}.zip
