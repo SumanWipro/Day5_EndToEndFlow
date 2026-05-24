@@ -1,4 +1,4 @@
-name: Python CI/CD
+name: Python CI/CD Pipeline
 
 on:
   push:
@@ -7,9 +7,12 @@ on:
     branches: ["main"]
 
 jobs:
-  # ── Stage 1: Test ────────────────────────────────────────────────────────────
-  test:
-    name: Test
+
+  # ── Stage 1: Build ───────────────────────────────────────────────────────────
+  # Lint the code and produce a distributable wheel + sdist.
+  # All downstream stages consume the artifact produced here.
+  build:
+    name: Build
     runs-on: ubuntu-latest
 
     steps:
@@ -25,6 +28,45 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Lint with flake8
+        run: flake8 calculator/ main.py --max-line-length=100 --exclude=.venv
+
+      - name: Build package
+        run: python -m build
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-packages
+          path: dist/
+
+  # ── Stage 2: Test ────────────────────────────────────────────────────────────
+  # Download the built artifact and run the full test suite with coverage.
+  # Fails the pipeline if coverage drops below 60%.
+  test:
+    name: Test
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-packages
+          path: dist/
+
       - name: Run tests with coverage
         run: pytest tests/ -v --cov=calculator --cov-report=term-missing --cov-fail-under=60
 
@@ -34,7 +76,9 @@ jobs:
           name: coverage-report
           path: .coverage
 
-  # ── Stage 2: Deploy ──────────────────────────────────────────────────────────
+  # ── Stage 3: Deploy ──────────────────────────────────────────────────────────
+  # Runs only on push to main (not on PRs) after tests pass.
+  # Publishes a versioned GitHub Release with the built wheel and sdist.
   deploy:
     name: Deploy
     needs: test
@@ -48,19 +92,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
         with:
-          python-version: "3.11"
-          cache: "pip"
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Build release archive
-        run: |
-          zip -r calculator-v${{ github.run_number }}.zip \
-            calculator/ tests/ main.py requirements.txt
+          name: dist-packages
+          path: dist/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -68,7 +104,10 @@ jobs:
           tag_name: v${{ github.run_number }}
           name: "Release v${{ github.run_number }}"
           body: |
-            Automated release from commit ${{ github.sha }}
+            **Commit:** ${{ github.sha }}
+            **Message:** ${{ github.event.head_commit.message }}
 
-            **Changes:** ${{ github.event.head_commit.message }}
-          files: calculator-v${{ github.run_number }}.zip
+            ### Artifacts
+            - `.whl` — installable wheel (`pip install calculator-*.whl`)
+            - `.tar.gz` — source distribution
+          files: dist/*
